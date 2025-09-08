@@ -102,27 +102,50 @@ class MotionPlanningNode(Node):
         else:
             if self.path_data is None:
                 self.steering_command = 0
+                self.left_speed_command = 0
+                self.right_speed_command = 0
+            # 경로 데이터가 있을 경우
             else:
-                target_slope = DMFL.calculate_slope_between_points(self.path_data[-10], self.path_data[-1])
-                
-                if target_slope > 0:
-                    self.steering_command =  7 # 예시 조향 값 (7이 최대 조향) 
-                elif target_slope < 0:
-                    self.steering_command =  -7
-                else:
+                try:
+                    # ======================== 디버깅 코드 시작 ========================
+                    
+                    # 기울기 계산에 사용될 두 점을 직접 확인합니다.
+                    p1 = self.path_data[-10]
+                    p2 = self.path_data[-1]
+                    
+                    target_slope = DMFL.calculate_slope_between_points(p1, p2)
+
+                    steering_gain = 40.0
+                    max_steering = 7.0
+
+                    # gain을 곱하기 전의 순수 기울기 값과, gain을 곱한 후의 조향 값을 확인합니다.
+                    calculated_steering = target_slope * steering_gain
+                    
+                    self.steering_command = max(-max_steering, min(calculated_steering, max_steering))
+                    self.steering_command = int(self.steering_command)
+
+                    # --- 터미널에 핵심 정보 출력 ---
+                    self.get_logger().info("--- Steering Calculation Debug ---")
+                    self.get_logger().info(f"Point 1 (x, y): ({p1[0]:.2f}, {p1[1]:.2f})")
+                    self.get_logger().info(f"Point 2 (x, y): ({p2[0]:.2f}, {p2[1]:.2f})")
+                    self.get_logger().info(f"Calculated Slope: {target_slope:.4f}")
+                    self.get_logger().info(f"Steering (Before Clamp): {calculated_steering:.2f}")
+                    self.get_logger().info(f"Final Steering Command: {self.steering_command}")
+                    self.get_logger().info("------------------------------------")
+                    # --------------------------------
+
+                    # ======================== 디버깅 코드 종료 ========================
+
+                    self.left_speed_command = 100
+                    self.right_speed_command = 100
+
+                except IndexError:
+                    self.get_logger().warn("Path data is not long enough. Stopping.")
                     self.steering_command = 0
+                    self.left_speed_command = 0
+                    self.right_speed_command = 0
 
-
-            self.left_speed_command = 50  # 예시 속도 값 (255가 최대 속도)
-            self.right_speed_command = 50  # 예시 속도 값 (255가 최대 속도)
-
-
-
-        self.get_logger().info(f"steering: {self.steering_command}, " 
-                               f"left_speed: {self.left_speed_command}, " 
-                               f"right_speed: {self.right_speed_command}")
-
-        # 모션 명령 메시지 생성 및 퍼블리시
+        # 모션 명령 메시지 생성 및 퍼블리시 (기존과 동일)
         motion_command_msg = MotionCommand()
         motion_command_msg.steering = self.steering_command
         motion_command_msg.left_speed = self.left_speed_command

@@ -16,7 +16,7 @@ def generate_launch_description():
                 name=f'image_publisher_node_{i}',
                 output='screen',
                 parameters=[
-                    {'data_source': 'camera'},
+                    {'data_source': 'video'},
                     {'cam_num': i}, 
                     {'pub_topic': f'image_raw_{i}'}
                 ]

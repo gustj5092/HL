@@ -40,15 +40,24 @@ print("------------------------------------------")
 
 
 def calculate_slope_between_points(p1, p2):
-    
+    print(">>>> NEW VERSION OF SLOPE CALCULATION IS RUNNING! <<<<")
     p1_x = p1[0]
     p1_y = p1[1]
     p2_x = p2[0]
     p2_y = p2[1]
     
-    if p1_y == p2_y:
-        slope = 'inf'
+    # 분모가 0이 되는 경우 (수직선) 방지
+    if abs(p1_y - p2_y) < 1e-6: # 1e-6은 아주 작은 수를 의미
+        return 0.0
+
+    # ======================== 수정된 부분 시작 ========================
+    # arctan과 각도 변환을 제거하고, 순수한 x변화량 / y변화량 비율을 반환합니다.
+    # 이 값은 일반적으로 -1.0 ~ 1.0 사이의 작은 값을 가집니다.
+    # (p2_y - p1_y)가 음수가 아니도록 y좌표가 큰 쪽에서 작은 쪽을 빼도록 수정
+    if p2_y > p1_y:
+        slope = (p2_x - p1_x) / (p2_y - p1_y)
     else:
-        slope = np.arctan((p2_x-p1_x)/(p1_y-p2_y))*180/np.pi
+        slope = (p1_x - p2_x) / (p1_y - p2_y)
+    # ======================== 수정된 부분 종료 ========================
     
     return slope
