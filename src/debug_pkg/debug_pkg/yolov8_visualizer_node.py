@@ -42,7 +42,7 @@ from interfaces_pkg.msg import KeyPoint2D
 from interfaces_pkg.msg import KeyPoint3D
 from interfaces_pkg.msg import Detection
 from interfaces_pkg.msg import DetectionArray
-
+from interfaces_pkg.msg import MotionCommand
 
 class Yolov8VisualizerNode(LifecycleNode):
 
@@ -51,12 +51,15 @@ class Yolov8VisualizerNode(LifecycleNode):
 
         self._class_to_color = {}
         self.cv_bridge = CvBridge()
-
+        self.steering = 0
         # params
         self.declare_parameter("image_reliability",
                                QoSReliabilityPolicy.RELIABLE)
 
         self.get_logger().info("Debug node created")
+
+    def control_callback(self, msg: MotionCommand):
+        self.steering = msg.steering
 
     def on_configure(self, state: LifecycleState) -> TransitionCallbackReturn:
         self.get_logger().info(f'Configuring {self.get_name()}')
@@ -80,7 +83,11 @@ class Yolov8VisualizerNode(LifecycleNode):
 
     def on_activate(self, state: LifecycleState) -> TransitionCallbackReturn:
         self.get_logger().info(f'Activating {self.get_name()}')
-
+        self.control_sub = self.create_subscription(
+            MotionCommand,
+            "topic_control_signal", # MotionCommand 메시지가 발행되는 토픽 이름
+            self.control_callback,
+            10)
         # subs
         self.image_sub = message_filters.Subscriber(
             self, Image, "image_raw", qos_profile=self.image_qos_profile)
@@ -95,7 +102,7 @@ class Yolov8VisualizerNode(LifecycleNode):
 
     def on_deactivate(self, state: LifecycleState) -> TransitionCallbackReturn:
         self.get_logger().info(f'Deactivating {self.get_name()}')
-
+        self.destroy_subscription(self.control_sub)
         self.destroy_subscription(self.image_sub.sub)
         self.destroy_subscription(self.detections_sub.sub)
 
@@ -283,7 +290,9 @@ class Yolov8VisualizerNode(LifecycleNode):
                     marker.header.stamp = img_msg.header.stamp
                     marker.id = len(kp_marker_array.markers)
                     kp_marker_array.markers.append(marker)
-
+                    
+        steering_text = f"Steering: {self.steering}"
+        cv2.putText(cv_image, steering_text, (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 0, 0), 2, cv2.LINE_AA)
         # publish dbg image
         self._dbg_pub.publish(self.cv_bridge.cv2_to_imgmsg(cv_image,
                                                            encoding=img_msg.encoding))
