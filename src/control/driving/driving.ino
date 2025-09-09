@@ -21,7 +21,8 @@ const int resistance_most_right = 352;
 const int MAX_STEERING_STEP = 7;
 
 // 제어 상태 변수
-int angle = 0, resistance = 0, mapped_resistance = 0;
+float angle = 0; 
+int resistance = 0, mapped_resistance = 0;
 int left_speed = 0, right_speed = 0;
 
 // 명령 주기 제한 변수
@@ -155,7 +156,7 @@ void processData(const char *data) {
     }
 
     if (sIndex != -1 && lIndex != -1 && rIndex != -1) {
-        int newAngle = atoi(data + sIndex + 1);
+        float newAngle = atof(data + sIndex + 1);
         int newLeftSpeed = atoi(data + lIndex + 1);
         int newRightSpeed = atoi(data + rIndex + 1);
 
