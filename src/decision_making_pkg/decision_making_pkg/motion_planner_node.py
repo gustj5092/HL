@@ -1,40 +1,59 @@
 import rclpy
 from rclpy.node import Node
-from rclpy.qos import QoSProfile
-from rclpy.qos import QoSHistoryPolicy
-from rclpy.qos import QoSDurabilityPolicy
-from rclpy.qos import QoSReliabilityPolicy
-
+from rclpy.qos import QoSProfile, QoSHistoryPolicy, QoSDurabilityPolicy, QoSReliabilityPolicy
 from std_msgs.msg import String, Bool
 from interfaces_pkg.msg import PathPlanningResult, DetectionArray, MotionCommand
-from .lib import decision_making_func_lib as DMFL
 
 #---------------Variable Setting---------------
-SUB_DETECTION_TOPIC_NAME = "detections"
+SUB_DETECTION_TOPIC_NAME = "detections_0"
 SUB_PATH_TOPIC_NAME = "path_planning_result"
 SUB_TRAFFIC_LIGHT_TOPIC_NAME = "yolov8_traffic_light_info"
 SUB_LIDAR_OBSTACLE_TOPIC_NAME = "lidar_obstacle_info"
 PUB_TOPIC_NAME = "topic_control_signal"
-
 #----------------------------------------------
 
-# 모션 플랜 발행 주기 (초) - 소수점 필요 (int형은 반영되지 않음)
 TIMER = 0.1
+
+class PIDController:
+    def __init__(self, kp, ki, kd, integral_limit=5.0):
+        self.kp = kp
+        self.ki = ki
+        self.kd = kd
+        self.previous_error = 0
+        self.integral = 0
+        self.integral_limit = integral_limit
+
+    def calculate(self, error, dt):
+        if dt == 0:
+            return 0
+        
+        self.integral += error * dt
+        if self.integral > self.integral_limit:
+            self.integral = self.integral_limit
+        elif self.integral < -self.integral_limit:
+            self.integral = -self.integral_limit
+            
+        derivative = (error - self.previous_error) / dt
+        output = self.kp * error + self.ki * self.integral + self.kd * derivative
+        self.previous_error = error
+        return output
 
 class MotionPlanningNode(Node):
     def __init__(self):
         super().__init__('motion_planner_node')
 
-        # 토픽 이름 설정
         self.sub_detection_topic = self.declare_parameter('sub_detection_topic', SUB_DETECTION_TOPIC_NAME).value
         self.sub_path_topic = self.declare_parameter('sub_lane_topic', SUB_PATH_TOPIC_NAME).value
         self.sub_traffic_light_topic = self.declare_parameter('sub_traffic_light_topic', SUB_TRAFFIC_LIGHT_TOPIC_NAME).value
         self.sub_lidar_obstacle_topic = self.declare_parameter('sub_lidar_obstacle_topic', SUB_LIDAR_OBSTACLE_TOPIC_NAME).value
         self.pub_topic = self.declare_parameter('pub_topic', PUB_TOPIC_NAME).value
-        
         self.timer_period = self.declare_parameter('timer', TIMER).value
+        
+        self.steering_pid = PIDController(kp=0.2, ki=0.005, kd=0.01) 
+        self.last_time = self.get_clock().now()
+        self.vehicle_position = (300,470)
+        self.image_center = self.declare_parameter('image_center', 300).value
 
-        # QoS 설정
         self.qos_profile = QoSProfile(
             reliability=QoSReliabilityPolicy.RELIABLE,
             history=QoSHistoryPolicy.KEEP_LAST,
@@ -42,33 +61,27 @@ class MotionPlanningNode(Node):
             depth=1
         )
 
-        # 변수 초기화
         self.detection_data = None
         self.path_data = None
         self.traffic_light_data = None
         self.lidar_data = None
-
-        self.steering_command = 0
+        self.steering_command = 0.0
         self.left_speed_command = 0
         self.right_speed_command = 0
         
-
-        # 서브스크라이버 설정
         self.detection_sub = self.create_subscription(DetectionArray, self.sub_detection_topic, self.detection_callback, self.qos_profile)
         self.path_sub = self.create_subscription(PathPlanningResult, self.sub_path_topic, self.path_callback, self.qos_profile)
         self.traffic_light_sub = self.create_subscription(String, self.sub_traffic_light_topic, self.traffic_light_callback, self.qos_profile)
         self.lidar_sub = self.create_subscription(Bool, self.sub_lidar_obstacle_topic, self.lidar_callback, self.qos_profile)
-
-        # 퍼블리셔 설정
         self.publisher = self.create_publisher(MotionCommand, self.pub_topic, self.qos_profile)
-
-        # 타이머 설정
         self.timer = self.create_timer(self.timer_period, self.timer_callback)
+        self.get_logger().info('Motion Planner Node has been started.')
 
     def detection_callback(self, msg: DetectionArray):
         self.detection_data = msg
 
     def path_callback(self, msg: PathPlanningResult):
+        self.get_logger().info('<<<<< Path data received! >>>>>')
         self.path_data = list(zip(msg.x_points, msg.y_points))
                 
     def traffic_light_callback(self, msg: String):
@@ -78,76 +91,62 @@ class MotionPlanningNode(Node):
         self.lidar_data = msg
         
     def timer_callback(self):
+        current_time = self.get_clock().now()
+        dt = (current_time - self.last_time).nanoseconds / 1e9
+        self.last_time = current_time
 
         if self.lidar_data is not None and self.lidar_data.data is True:
-            # 라이다가 장애물을 감지한 경우
-            self.steering_command = 0 
+            self.steering_command = 0.0 
             self.left_speed_command = 0 
             self.right_speed_command = 0 
-
-        elif self.traffic_light_data is not None and self.traffic_light_data.data == 'Red':
-            # 빨간색 신호등을 감지한 경우
-            for detection in self.detection_data.detections:
+        elif self.traffic_light_data is not None and self.traffic_light_data.data == 'Red' and self.detection_data is not None:
+             for detection in self.detection_data.detections:
                 if detection.class_name=='traffic_light':
-                    x_min = int(detection.bbox.center.position.x - detection.bbox.size.x / 2) # bbox의 좌측상단 꼭짓점 x좌표
-                    x_max = int(detection.bbox.center.position.x + detection.bbox.size.x / 2) # bbox의 우측하단 꼭짓점 x좌표
-                    y_min = int(detection.bbox.center.position.y - detection.bbox.size.y / 2) # bbox의 좌측상단 꼭짓점 y좌표
-                    y_max = int(detection.bbox.center.position.y + detection.bbox.size.y / 2) # bbox의 우측하단 꼭짓점 y좌표
-
+                    y_max = int(detection.bbox.center.position.y + detection.bbox.size.y / 2)
                     if y_max < 150:
-                        # 신호등 위치에 따른 정지명령 결정
-                        self.steering_command = 0 
+                        self.steering_command = 0.0 
                         self.left_speed_command = 0 
                         self.right_speed_command = 0
         else:
-            if self.path_data is None:
-                self.steering_command = 0
+            if self.path_data is None or len(self.path_data) == 0:
+                self.steering_command = 0.0
                 self.left_speed_command = 0
                 self.right_speed_command = 0
-            # 경로 데이터가 있을 경우
             else:
                 try:
-                    # ======================== 디버깅 코드 시작 ========================
+                    # [핵심 수정] ROI 크기에 무관한 동적 목표 지점 설정
+                    path_len = len(self.path_data)
                     
-                    # 기울기 계산에 사용될 두 점을 직접 확인합니다.
-                    p1 = self.path_data[-10]
-                    p2 = self.path_data[-1]
+                    # 가까운 목표점: 경로의 70% 지점 (인덱스는 0부터 시작하므로 path_len * 0.3)
+                    near_target_point = self.path_data[int(path_len * 0.3)]
                     
-                    target_slope = DMFL.calculate_slope_between_points(p1, p2)
+                    # 먼 목표점: 경로의 30% 지점 (인덱스는 0부터 시작하므로 path_len * 0.7)
+                    far_target_point = self.path_data[int(path_len * 0.7)]
+                    
+                    # 두 목표점의 x 좌표에 가중 평균을 주어 최종 목표 x 좌표 계산
+                    # 먼 곳의 경로를 더 중요하게 생각하여 가중치를 0.6으로 설정
+                    weighted_target_x = (near_target_point[0] * 0.4) + (far_target_point[0] * 0.6)
 
-                    steering_gain = 40.0
+                    cross_track_error = weighted_target_x - self.image_center
+                    
+                    steering_adjustment = self.steering_pid.calculate(cross_track_error, dt)
+
                     max_steering = 7.0
+                    self.steering_command = max(-max_steering, min(steering_adjustment, max_steering))
 
-                    # gain을 곱하기 전의 순수 기울기 값과, gain을 곱한 후의 조향 값을 확인합니다.
-                    calculated_steering = target_slope * steering_gain
-                    
-                    self.steering_command = max(-max_steering, min(calculated_steering, max_steering))
-                    self.steering_command = int(self.steering_command)
-
-                    # --- 터미널에 핵심 정보 출력 ---
-                    self.get_logger().info("--- Steering Calculation Debug ---")
-                    self.get_logger().info(f"Point 1 (x, y): ({p1[0]:.2f}, {p1[1]:.2f})")
-                    self.get_logger().info(f"Point 2 (x, y): ({p2[0]:.2f}, {p2[1]:.2f})")
-                    self.get_logger().info(f"Calculated Slope: {target_slope:.4f}")
-                    self.get_logger().info(f"Steering (Before Clamp): {calculated_steering:.2f}")
-                    self.get_logger().info(f"Final Steering Command: {self.steering_command}")
-                    self.get_logger().info("------------------------------------")
-                    # --------------------------------
-
-                    # ======================== 디버깅 코드 종료 ========================
+                    self.get_logger().info(f"Target X: {weighted_target_x:.2f}, CTE: {cross_track_error:.2f}, Steering Cmd: {self.steering_command:.2f}")
 
                     self.left_speed_command = 100
                     self.right_speed_command = 100
 
                 except IndexError:
                     self.get_logger().warn("Path data is not long enough. Stopping.")
-                    self.steering_command = 0
+                    self.steering_command = 0.0
                     self.left_speed_command = 0
                     self.right_speed_command = 0
 
-        # 모션 명령 메시지 생성 및 퍼블리시 (기존과 동일)
         motion_command_msg = MotionCommand()
-        motion_command_msg.steering = self.steering_command
+        motion_command_msg.steering = self.steering_command 
         motion_command_msg.left_speed = self.left_speed_command
         motion_command_msg.right_speed = self.right_speed_command
         self.publisher.publish(motion_command_msg)
